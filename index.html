@@ -1,0 +1,329 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <title>WebAR: очки на лице (MindAR Face + A-Frame)</title>
+
+  <!-- ===== МОБИЛЬНЫЕ META-ТЕГИ ===== -->
+  <!-- viewport-fit=cover: контент заходит под "чёлку" iOS; user-scalable=no: запрет зума -->
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="theme-color" content="#000000">
+  <meta name="format-detection" content="telephone=no">
+
+  <!-- ===== БИБЛИОТЕКИ (версии зафиксированы) ===== -->
+  <!-- A-Frame (внутри содержит Three.js) -->
+  <script src="https://aframe.io/releases/1.5.0/aframe.min.js"></script>
+  <!-- MindAR именно для FACE tracking (не image!) -->
+  <script src="https://cdn.jsdelivr.net/npm/mind-ar@1.2.5/dist/mindar-face-aframe.prod.js"></script>
+
+  <style>
+    html, body {
+      margin: 0; padding: 0;
+      width: 100%; height: 100%;
+      overflow: hidden;
+      background: #000;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      /* Запрещаем жесты браузера (зум, скролл, pull-to-refresh) */
+      touch-action: none;
+      overscroll-behavior: none;
+      -webkit-user-select: none; user-select: none;
+      -webkit-tap-highlight-color: transparent;
+    }
+
+    /* Полноэкранные слои интерфейса. Отступы env(safe-area-*) — фикс для iOS (чёлка, home-индикатор) */
+    .overlay {
+      position: fixed; inset: 0; z-index: 10;
+      display: flex; flex-direction: column;
+      align-items: center; justify-content: center;
+      text-align: center; color: #fff;
+      background: rgba(10, 10, 20, 0.92);
+      padding: env(safe-area-inset-top) env(safe-area-inset-right)
+               env(safe-area-inset-bottom) env(safe-area-inset-left);
+      box-sizing: border-box;
+    }
+    .overlay.hidden { display: none; }
+    .overlay h1 { font-size: 1.4rem; margin: 0 0 .5rem; }
+    .overlay p  { margin: .3rem 1.5rem; max-width: 420px; line-height: 1.4; opacity: .85; }
+
+    button {
+      margin-top: 1.2rem; padding: .9rem 2rem;
+      font-size: 1.05rem; font-weight: 600;
+      color: #fff; background: #4f7cff;
+      border: 0; border-radius: 999px; cursor: pointer;
+    }
+    button:active { transform: scale(.97); }
+
+    /* Спиннер загрузки */
+    .spinner {
+      width: 44px; height: 44px; margin-bottom: 1rem;
+      border: 4px solid rgba(255,255,255,.25);
+      border-top-color: #fff; border-radius: 50%;
+      animation: spin 1s linear infinite;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    /* Всплывающая подсказка "лицо не найдено" (не блокирует сцену) */
+    #hint {
+      position: fixed; z-index: 9; left: 50%;
+      bottom: calc(env(safe-area-inset-bottom) + 24px);
+      transform: translateX(-50%);
+      padding: .7rem 1.2rem; border-radius: 999px;
+      background: rgba(0,0,0,.65); color: #fff; font-size: .95rem;
+      white-space: nowrap; pointer-events: none;
+      transition: opacity .25s; opacity: 0;
+    }
+    #hint.visible { opacity: 1; }
+
+    /* Видео камеры и canvas должны занимать весь экран */
+    a-scene { position: fixed; inset: 0; }
+  </style>
+</head>
+
+<body>
+
+  <!-- ===== ЭКРАН СТАРТА / ЗАГРУЗКИ ===== -->
+  <!-- Камеру запускаем ТОЛЬКО по нажатию кнопки: iOS Safari требует жест пользователя -->
+  <div id="startScreen" class="overlay">
+    <h1>👓 AR-очки</h1>
+    <p>Нажмите «Начать» и разрешите доступ к камере. Держите лицо в кадре при хорошем освещении.</p>
+    <button id="startBtn">Начать</button>
+  </div>
+
+  <div id="loadingScreen" class="overlay hidden">
+    <div class="spinner"></div>
+    <p id="loadingText">Загрузка модели и запуск камеры…</p>
+  </div>
+
+  <!-- ===== ЭКРАН ОШИБКИ ===== -->
+  <div id="errorScreen" class="overlay hidden">
+    <h1>⚠️ Что-то пошло не так</h1>
+    <p id="errorText"></p>
+    <button id="retryBtn">Повторить</button>
+  </div>
+
+  <!-- Подсказка, если лицо потеряно -->
+  <div id="hint">Лицо не найдено — посмотрите в камеру</div>
+
+  <!--
+    ===== AR-СЦЕНА =====
+    mindar-face — основной компонент:
+      autoStart: false     — не стартуем сами, ждём нажатия кнопки (разрешение камеры)
+      uiLoading/Scanning/Error: no — отключаем встроенный UI MindAR, используем свой
+      filterMinCF / filterBeta — параметры сглаживания (фильтр One Euro), см. комментарий ниже
+  -->
+  <a-scene
+    id="scene"
+    mindar-face="autoStart: false; uiLoading: no; uiScanning: no; uiError: no;
+                 filterMinCF: 0.0005; filterBeta: 10"
+    color-space="sRGB"
+    renderer="colorManagement: true; physicallyCorrectLights: true; antialias: true"
+    vr-mode-ui="enabled: false"
+    device-orientation-permission-ui="enabled: false"
+    embedded>
+
+    <!-- Камера A-Frame. Параметры не меняем: MindAR сам управляет проекцией -->
+    <a-camera active="true" position="0 0 0" look-controls="enabled: false"></a-camera>
+
+    <!--
+      Освещение, чтобы PBR-материалы модели не выглядели чёрными.
+    -->
+    <a-light type="ambient" intensity="1.2"></a-light>
+    <a-light type="directional" intensity="1.0" position="0 1 2"></a-light>
+
+    <!--
+      Якорь на лице. anchorIndex — номер точки из 468 точек Face Mesh.
+      168 = переносица (между глаз) — идеальная точка для очков.
+      Другие полезные точки: 1 — кончик носа, 10 — лоб, 152 — подбородок.
+    -->
+    <a-entity id="faceAnchor" mindar-face-target="anchorIndex: 168">
+
+      <!--
+        3D-модель очков. Файл glasses.glb лежит в корне репозитория.
+        Параметры ниже — НАЧАЛЬНЫЕ, подбираются под конкретную модель:
+          position — смещение от переносицы (x вправо, y вверх, z вперёд от лица)
+          rotation — поворот в градусах (если модель смотрит не туда: попробуйте "0 180 0")
+          scale    — размер (если очки огромные/крошечные — меняйте в 2–5 раз)
+      -->
+      <a-gltf-model
+        id="glasses"
+        src="glasses.glb"
+        position="0 -0.05 0.1"
+        rotation="0 0 0"
+        scale="0.01 0.01 0.01">
+      </a-gltf-model>
+    </a-entity>
+  </a-scene>
+
+  <script>
+    /* =========================================================
+       СГЛАЖИВАНИЕ ТРЕКИНГА (важно для объяснения преподавателю)
+       ---------------------------------------------------------
+       В компоненте mindar-face параметров filterMinConfidence,
+       filterMaxConfidence и maxTrack НЕТ — они относятся к
+       image-tracking (maxTrack — число отслеживаемых картинок).
+       В Face Tracking сглаживание делается фильтром One Euro:
+         filterMinCF — минимальная частота среза.
+                       Меньше значение  → плавнее, меньше дрожание, но больше задержка.
+         filterBeta  — «скоростной» коэффициент.
+                       Больше значение  → фильтр слабее при быстром движении,
+                       очки не «отстают» от головы при резких поворотах.
+       Хорошая комбинация: маленький minCF + большой beta
+       (стабильно в покое, быстро реагирует в движении).
+       ========================================================= */
+
+    const $ = (id) => document.getElementById(id);
+    const sceneEl = $('scene');
+    const faceAnchor = $('faceAnchor');
+    const glasses = $('glasses');
+
+    let started = false;       // сцена уже запускалась
+    let hintTimer = null;      // таймер "лицо не найдено" после старта
+
+    /* ----- Вспомогательные функции интерфейса ----- */
+    function show(el) { el.classList.remove('hidden'); }
+    function hide(el) { el.classList.add('hidden'); }
+
+    function showError(message) {
+      $('errorText').textContent = message;
+      hide($('loadingScreen'));
+      hide($('startScreen'));
+      show($('errorScreen'));
+    }
+
+    function setHint(visible) {
+      $('hint').classList.toggle('visible', visible);
+    }
+
+    /* ----- Запрет жестов зума на iOS (pinch / double-tap) ----- */
+    ['gesturestart', 'gesturechange', 'gestureend'].forEach((evt) =>
+      document.addEventListener(evt, (e) => e.preventDefault())
+    );
+    document.addEventListener('touchmove', (e) => e.preventDefault(), { passive: false });
+
+    /* ----- Ориентация -----
+       Сцена АДАПТИВНАЯ: работает и в портретной, и в альбомной ориентации —
+       MindAR сам пересчитывает размер видео и canvas при повороте.
+       Дополнительно пробуем зафиксировать портрет (работает только на Android
+       в полноэкранном режиме; на iOS API недоступен — это нормально). */
+    async function tryLockOrientation() {
+      try {
+        if (screen.orientation && screen.orientation.lock) {
+          await screen.orientation.lock('portrait');
+        }
+      } catch (_) { /* не поддерживается — игнорируем, сцена и так адаптивна */ }
+    }
+    window.addEventListener('orientationchange', () => {
+      // Небольшая задержка: браузер должен успеть пересчитать размеры окна
+      setTimeout(() => window.dispatchEvent(new Event('resize')), 300);
+    });
+
+    /* ----- Проверка окружения до запроса камеры ----- */
+    function checkEnvironment() {
+      // getUserMedia доступен только по HTTPS (GitHub Pages — HTTPS) или на localhost
+      if (!window.isSecureContext) {
+        return 'Камера работает только по HTTPS. Откройте страницу по защищённой ссылке (https://…).';
+      }
+      if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+        return 'Ваш браузер не поддерживает доступ к камере. Попробуйте Safari (iOS) или Chrome (Android).';
+      }
+      return null;
+    }
+
+    /* ----- Запрос разрешения камеры ----- */
+    async function requestCamera() {
+      try {
+        // Явно запрашиваем фронтальную камеру, чтобы показать системный диалог разрешения.
+        const stream = await navigator.mediaDevices.getUserMedia({
+          video: { facingMode: 'user' },
+          audio: false
+        });
+        // Сразу останавливаем: дальше камерой управляет MindAR
+        stream.getTracks().forEach((t) => t.stop());
+        return null;
+      } catch (err) {
+        switch (err.name) {
+          case 'NotAllowedError':
+          case 'PermissionDeniedError':
+            return 'Доступ к камере запрещён. Разрешите камеру в настройках браузера и нажмите «Повторить».';
+          case 'NotFoundError':
+          case 'DevicesNotFoundError':
+            return 'Камера не найдена на этом устройстве.';
+          case 'NotReadableError':
+          case 'TrackStartError':
+            return 'Камера занята другим приложением. Закройте его и повторите.';
+          default:
+            return 'Не удалось запустить камеру: ' + (err.message || err.name);
+        }
+      }
+    }
+
+    /* ----- Основной запуск ----- */
+    async function startAR() {
+      hide($('startScreen'));
+      hide($('errorScreen'));
+      show($('loadingScreen'));
+
+      const envError = checkEnvironment();
+      if (envError) return showError(envError);
+
+      const camError = await requestCamera();
+      if (camError) return showError(camError);
+
+      tryLockOrientation();
+
+      try {
+        // Система MindAR: запускает камеру, загружает модель трекинга лица
+        const mindarSystem = sceneEl.systems['mindar-face-system'];
+        await mindarSystem.start();
+        started = true;
+      } catch (err) {
+        showError('Не удалось запустить AR: ' + (err && err.message ? err.message : err));
+      }
+    }
+
+    /* ----- События MindAR ----- */
+    // Камера и нейросеть готовы
+    sceneEl.addEventListener('arReady', () => {
+      hide($('loadingScreen'));
+      // Если за 6 секунд лицо так и не найдено — показываем подсказку
+      clearTimeout(hintTimer);
+      hintTimer = setTimeout(() => setHint(true), 6000);
+    });
+
+    // Ошибка внутри MindAR (камера, WebGL, модель и т.д.)
+    sceneEl.addEventListener('arError', () => {
+      showError('Ошибка AR: не удалось получить доступ к камере или инициализировать трекинг.');
+    });
+
+    // Лицо найдено / потеряно (события приходят от mindar-face-target)
+    faceAnchor.addEventListener('targetFound', () => {
+      clearTimeout(hintTimer);
+      setHint(false);
+    });
+    faceAnchor.addEventListener('targetLost', () => {
+      // Показываем подсказку не сразу, чтобы не мигала при коротких потерях
+      clearTimeout(hintTimer);
+      hintTimer = setTimeout(() => setHint(true), 1500);
+    });
+
+    /* ----- События загрузки 3D-модели ----- */
+    glasses.addEventListener('model-loaded', () => {
+      console.log('Модель glasses.glb загружена');
+    });
+    glasses.addEventListener('model-error', () => {
+      showError('Не найден файл glasses.glb. Положите модель в корень проекта рядом с index.html.');
+    });
+
+    /* ----- Кнопки ----- */
+    $('startBtn').addEventListener('click', startAR);
+    $('retryBtn').addEventListener('click', async () => {
+      // Если сцена уже стартовала — перезагрузка страницы самый надёжный способ
+      if (started) return location.reload();
+      startAR();
+    });
+  </script>
+</body>
+</html>
