@@ -15,7 +15,7 @@
 
   <!-- ===== БИБЛИОТЕКИ (версии зафиксированы) ===== -->
   <!-- A-Frame (внутри содержит Three.js) -->
-  <script src="https://aframe.io/releases/1.5.0/aframe.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/aframe@1.5.0/dist/aframe.min.js"></script>
   <!-- MindAR именно для FACE tracking (не image!) -->
   <script src="https://cdn.jsdelivr.net/npm/mind-ar@1.2.5/dist/mindar-face-aframe.prod.js"></script>
 
@@ -275,6 +275,19 @@
       tryLockOrientation();
 
       try {
+        // Диагностика: убеждаемся, что обе библиотеки реально загрузились
+        if (typeof AFRAME === 'undefined') {
+          return showError('Библиотека A-Frame не загрузилась (нет интернета или CDN заблокирован). Откройте консоль (F12) и проверьте вкладку Network.');
+        }
+        if (!AFRAME.systems || !AFRAME.systems['mindar-face-system']) {
+          return showError('Библиотека MindAR Face не загрузилась. Проверьте ссылку на mindar-face-aframe.prod.js и подключение к интернету.');
+        }
+
+        // Ждём, пока A-Frame полностью инициализирует сцену (иначе systems ещё не создан)
+        if (!sceneEl.hasLoaded) {
+          await new Promise((resolve) => sceneEl.addEventListener('loaded', resolve, { once: true }));
+        }
+
         // Система MindAR: запускает камеру, загружает модель трекинга лица
         const mindarSystem = sceneEl.systems['mindar-face-system'];
         await mindarSystem.start();
