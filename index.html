@@ -27,11 +27,15 @@
   <script src="https://cdn.jsdelivr.net/npm/mind-ar@1.2.5/dist/mindar-face-aframe.prod.js"></script>
 
   <style>
+    /* ВАЖНО: чёрный фон задаём ТОЛЬКО у html, а у body фон прозрачный.
+       MindAR кладёт <video> с камерой в body с отрицательным z-index;
+       если у body есть непрозрачный фон, он перекрывает видео — виден только чёрный экран. */
+    html { background: #000; }
     html, body {
       margin: 0; padding: 0;
       width: 100%; height: 100%;
       overflow: hidden;
-      background: #000;
+      background: transparent;
       font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
       /* Запрещаем жесты браузера (зум, скролл, pull-to-refresh) */
       touch-action: none;
@@ -84,8 +88,9 @@
     }
     #hint.visible { opacity: 1; }
 
-    /* Видео камеры и canvas должны занимать весь экран */
-    a-scene { position: fixed; inset: 0; }
+    /* Размеры и позицию a-scene и <video> выставляет сам MindAR (inline-стили),
+       поэтому здесь их не переопределяем. */
+    body { position: relative; }
   </style>
 </head>
 
