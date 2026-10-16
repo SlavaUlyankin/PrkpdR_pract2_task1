@@ -15,7 +15,14 @@
 
   <!-- ===== БИБЛИОТЕКИ (версии зафиксированы) ===== -->
   <!-- A-Frame (внутри содержит Three.js) -->
-  <script src="https://cdn.jsdelivr.net/npm/aframe@1.5.0/dist/aframe.min.js"></script>
+  <!-- Основной вариант: локальный файл aframe.min.js из корня репозитория (не зависит от CDN) -->
+  <script src="aframe.min.js"></script>
+  <!-- Запасной вариант: если локального файла нет — грузим с jsDelivr -->
+  <script>
+    if (typeof AFRAME === 'undefined') {
+      document.write('<script src="https://cdn.jsdelivr.net/npm/aframe@1.5.0/dist/aframe-v1.5.0.min.js"><\/script>');
+    }
+  </script>
   <!-- MindAR именно для FACE tracking (не image!) -->
   <script src="https://cdn.jsdelivr.net/npm/mind-ar@1.2.5/dist/mindar-face-aframe.prod.js"></script>
 
